@@ -1,0 +1,13 @@
+services:
+  hr-link:
+    build: .
+    container_name: hr-link-talantix-bi
+    env_file:
+      - .env
+    environment:
+      TALANTIX_TOKEN_FILE: /app/data/talantix_tokens.json
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

@@ -273,7 +273,6 @@ query Vacancies($after: String, $first: Int!, $filter: VacancyFilterInput) {
       id
       title
       department
-      description
       createdAt
       status
       statusUpdatedAt

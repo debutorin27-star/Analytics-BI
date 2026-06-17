@@ -1,4 +1,4 @@
-from app.cache import filter_dataset_since, parse_datetime
+from app.cache import dataset_table, dictionary_table, filter_dataset_since, parse_datetime, table_registry
 
 
 def test_filter_dataset_since_filters_tables_and_rebuilds_aggregates() -> None:
@@ -71,3 +71,76 @@ def test_filter_dataset_since_filters_tables_and_rebuilds_aggregates() -> None:
 
 def test_parse_datetime_accepts_unix_milliseconds() -> None:
     assert parse_datetime("1717200000000").isoformat() == "2024-06-01T00:00:00+00:00"
+
+
+def test_dataset_table_returns_flat_rows_and_strips_vacancy_description() -> None:
+    dataset = {
+        "vacancies": [
+            {
+                "vacancy_id": 1,
+                "vacancy_title": "Manager",
+                "description": "large html text",
+                "area_names": ["Moscow", "Kazan"],
+                "salary": {"from": 100000, "to": 150000},
+            }
+        ],
+        "meta": {},
+    }
+
+    rows = dataset_table(dataset, "vacancies")
+
+    assert rows == [
+        {
+            "vacancy_id": 1,
+            "vacancy_title": "Manager",
+            "area_names": "Moscow, Kazan",
+            "salary_from": 100000,
+            "salary_to": 150000,
+        }
+    ]
+    assert "description" not in dataset["vacancies"][0]
+
+
+def test_dictionary_table_flattens_dictionary_items() -> None:
+    dataset = {
+        "dictionaries": {
+            "languages": {
+                "items": [
+                    {
+                        "id": "en",
+                        "name": "English",
+                        "level": {"id": "b2", "name": "B2"},
+                    }
+                ]
+            }
+        }
+    }
+
+    assert dictionary_table(dataset, "languages") == [
+        {
+            "dictionary_name": "languages",
+            "id": "en",
+            "name": "English",
+            "level_id": "b2",
+            "level_name": "B2",
+        }
+    ]
+
+
+def test_table_registry_exposes_preferred_table_endpoints() -> None:
+    registry = table_registry({"vacancies": [], "workflow_stages": []})
+
+    assert registry == [
+        {
+            "name": "vacancies",
+            "canonical_name": "vacancies",
+            "rows": 0,
+            "endpoint": "/api/v1/bi/tables/vacancies",
+        },
+        {
+            "name": "workflow-stages",
+            "canonical_name": "workflow_stages",
+            "rows": 0,
+            "endpoint": "/api/v1/bi/tables/workflow-stages",
+        },
+    ]

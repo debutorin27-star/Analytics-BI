@@ -21,6 +21,40 @@ DATE_FIELDS: dict[str, tuple[str, ...]] = {
     "hiring_requests": ("updated_at_iso", "created_at_iso", "approved_at_iso", "withdrawn_at_iso"),
 }
 
+TABLE_ALIASES: dict[str, str] = {
+    "vacancies": "vacancies",
+    "workflow_stages": "workflow_stages",
+    "workflow-stages": "workflow_stages",
+    "responses": "responses",
+    "source_breakdown": "source_breakdown",
+    "source-breakdown": "source_breakdown",
+    "candidate_events": "candidate_events",
+    "candidate-events": "candidate_events",
+    "discard_reasons": "discard_reasons",
+    "discard-reasons": "discard_reasons",
+    "persons": "persons",
+    "person_sources": "person_sources",
+    "person-sources": "person_sources",
+    "managers": "managers",
+    "hiring_requests": "hiring_requests",
+    "hiring-requests": "hiring_requests",
+}
+PUBLIC_TABLE_NAMES: tuple[str, ...] = (
+    "vacancies",
+    "workflow-stages",
+    "responses",
+    "source-breakdown",
+    "candidate-events",
+    "discard-reasons",
+    "persons",
+    "person-sources",
+    "managers",
+    "hiring-requests",
+)
+TABLE_EXCLUDED_COLUMNS: dict[str, set[str]] = {
+    "vacancies": {"description"},
+}
+
 
 class BIDataCache:
     def __init__(self, service: TalantixBIService, settings: Settings) -> None:
@@ -73,6 +107,7 @@ class BIDataCache:
             raise CacheNotReadyError("BI cache is empty. Wait for sync or call /api/v1/bi/sync.")
 
         dataset = copy.deepcopy(self._dataset)
+        strip_excluded_columns(dataset)
         if updated_from:
             dataset = filter_dataset_since(dataset, updated_from)
         return dataset
@@ -122,6 +157,7 @@ class BIDataCache:
                     max_stages=effective_max_stages,
                     history_first=effective_history_first,
                 )
+                strip_excluded_columns(dataset)
                 cache_updated_at = _now_iso()
                 dataset.setdefault("meta", {})
                 dataset["meta"].update(
@@ -285,6 +321,87 @@ def filter_dataset_since(dataset: dict[str, Any], updated_from: str) -> dict[str
     return result
 
 
+def table_registry(dataset: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": public_name,
+            "canonical_name": canonical_name,
+            "rows": len(dataset.get(canonical_name) or []),
+            "endpoint": f"/api/v1/bi/tables/{public_name}",
+        }
+        for public_name in PUBLIC_TABLE_NAMES
+        for canonical_name in (TABLE_ALIASES[public_name],)
+        if isinstance(dataset.get(canonical_name), list)
+    ]
+
+
+def dictionary_registry(dataset: dict[str, Any]) -> list[dict[str, Any]]:
+    dictionaries = dataset.get("dictionaries") or {}
+    if not isinstance(dictionaries, dict):
+        return []
+
+    result: list[dict[str, Any]] = []
+    for name, payload in sorted(dictionaries.items()):
+        rows = _dictionary_items(payload)
+        result.append(
+            {
+                "name": name,
+                "rows": len(rows),
+                "endpoint": f"/api/v1/bi/dictionaries/{name}",
+            }
+        )
+    return result
+
+
+def dataset_table(dataset: dict[str, Any], table_name: str, *, flat: bool = True) -> list[dict[str, Any]]:
+    canonical_name = TABLE_ALIASES.get(table_name) or TABLE_ALIASES.get(table_name.replace("_", "-"))
+    if not canonical_name:
+        raise KeyError(table_name)
+    rows = dataset.get(canonical_name)
+    if not isinstance(rows, list):
+        raise KeyError(table_name)
+    strip_excluded_columns({canonical_name: rows})
+    return flatten_rows(rows) if flat else rows
+
+
+def dictionary_table(dataset: dict[str, Any], dictionary_name: str, *, flat: bool = True) -> list[dict[str, Any]]:
+    dictionaries = dataset.get("dictionaries") or {}
+    if not isinstance(dictionaries, dict) or dictionary_name not in dictionaries:
+        raise KeyError(dictionary_name)
+    rows = [{"dictionary_name": dictionary_name, **row} for row in _dictionary_items(dictionaries[dictionary_name])]
+    return flatten_rows(rows) if flat else rows
+
+
+def flatten_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [flatten_row(row) for row in rows]
+
+
+def flatten_row(row: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in row.items():
+        if isinstance(value, dict):
+            if _is_scalar_dict(value):
+                for nested_key, nested_value in value.items():
+                    result[f"{key}_{nested_key}"] = _format_flat_value(nested_value)
+            else:
+                result[key] = json.dumps(value, ensure_ascii=False, default=str)
+            continue
+        result[key] = _format_flat_value(value)
+    return result
+
+
+def strip_excluded_columns(dataset: dict[str, Any]) -> dict[str, Any]:
+    for table_name, excluded_columns in TABLE_EXCLUDED_COLUMNS.items():
+        rows = dataset.get(table_name)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if isinstance(row, dict):
+                for column in excluded_columns:
+                    row.pop(column, None)
+    return dataset
+
+
 def parse_datetime(value: str) -> datetime:
     normalized = value.strip()
     if normalized.isdigit():
@@ -333,6 +450,39 @@ def _row_id(row: dict[str, Any], *fields: str) -> Any:
         if value is not None:
             return value
     return None
+
+
+def _dictionary_items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, dict):
+        items = payload.get("items")
+        if isinstance(items, list):
+            return [item for item in items if isinstance(item, dict)]
+        return [payload] if payload else []
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    return []
+
+
+def _format_flat_value(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, list):
+        if not value:
+            return None
+        if all(_is_scalar(item) for item in value):
+            return ", ".join(str(item) for item in value if item is not None)
+        return json.dumps(value, ensure_ascii=False, default=str)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return str(value)
+
+
+def _is_scalar_dict(value: dict[str, Any]) -> bool:
+    return all(_is_scalar(item) for item in value.values())
+
+
+def _is_scalar(value: Any) -> bool:
+    return value is None or isinstance(value, str | int | float | bool)
 
 
 def _now_iso() -> str:

@@ -17,6 +17,8 @@ The service is read-only by default. It collects vacancies, workflow stages, res
 
 Talantix returns timestamps as Unix milliseconds. This service keeps the original value and adds `*_iso` fields where useful.
 
+Vacancy description text is intentionally excluded from BI export to keep cache and Power BI refresh payloads smaller.
+
 ## Setup
 
 Talantix API requires a bearer access token. A Talantix administrator generates the token JSON in the Talantix account.
@@ -129,6 +131,32 @@ dictionaries
 meta
 ```
 
+For direct flat table reads, use one endpoint per BI table:
+
+```text
+GET /api/v1/bi/tables
+GET /api/v1/bi/tables/vacancies
+GET /api/v1/bi/tables/workflow-stages
+GET /api/v1/bi/tables/responses
+GET /api/v1/bi/tables/source-breakdown
+GET /api/v1/bi/tables/candidate-events
+GET /api/v1/bi/tables/discard-reasons
+GET /api/v1/bi/tables/persons
+GET /api/v1/bi/tables/person-sources
+GET /api/v1/bi/tables/managers
+GET /api/v1/bi/tables/hiring-requests
+```
+
+These endpoints return a JSON array by default, so Power BI can use `Table.FromRecords(Source)` directly. Add `envelope=true` if you need `{ items, count, meta }` instead of a raw array. Add `flat=false` only if you want nested JSON fields preserved.
+
+Dictionaries are exposed separately:
+
+```text
+GET /api/v1/bi/dictionaries
+GET /api/v1/bi/dictionaries/areas
+GET /api/v1/bi/dictionaries/educationLevels
+```
+
 Authentication options:
 
 ```text
@@ -162,6 +190,8 @@ Incremental read from the prepared cache:
 ```text
 /api/v1/bi/export?updated_from=2026-06-10
 /api/v1/bi/export?updated_from=2026-06-10T10:30:00Z
+/api/v1/bi/tables/responses?updated_from=2026-06-10
+/api/v1/bi/tables/vacancies?updated_from=2026-06-10
 ```
 
 If `updated_from` is omitted, the endpoint returns the full cached dataset. The incremental filter is applied to tables that have update/event dates: vacancies, responses, candidate events, persons, and hiring requests.
@@ -194,6 +224,10 @@ GET  /api/v1/responses
 GET  /api/v1/funnel
 GET  /api/v1/bi/export
 GET  /api/v1/bi/export/live
+GET  /api/v1/bi/tables
+GET  /api/v1/bi/tables/{table_name}
+GET  /api/v1/bi/dictionaries
+GET  /api/v1/bi/dictionaries/{dictionary_name}
 GET  /api/v1/bi/sync/status
 POST /api/v1/bi/sync
 GET  /api/v1/persons
@@ -216,6 +250,17 @@ Common query parameters:
 docker build -t hr-link .
 docker run --env-file .env -p 8000:8000 hr-link
 ```
+
+Recommended compose run:
+
+```bash
+docker compose up -d --build
+docker compose ps
+docker compose logs -f hr-link
+docker compose down
+```
+
+The compose setup mounts `./data` into the container, so the prepared BI cache and refreshed Talantix token file survive container restarts.
 
 ## Talantix API Notes
 

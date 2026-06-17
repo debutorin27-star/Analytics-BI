@@ -6,7 +6,14 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-from app.cache import BIDataCache, CacheNotReadyError
+from app.cache import (
+    BIDataCache,
+    CacheNotReadyError,
+    dataset_table,
+    dictionary_registry,
+    dictionary_table,
+    table_registry,
+)
 from app.config import Settings, get_settings
 from app.models import GraphQLRequest
 from app.normalizers import compact_dict, parse_csv, parse_csv_int
@@ -234,15 +241,64 @@ async def bi_export(
     ),
     refresh: bool = Query(default=False, description="Synchronize Talantix before returning cached data."),
 ) -> dict[str, Any]:
-    if refresh:
-        try:
-            await cache.sync_once(force=True)
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"BI sync failed: {exc}") from exc
+    return await _cached_dataset(cache, updated_from=updated_from, refresh=refresh)
+
+
+@app.get("/api/v1/bi/tables", dependencies=[ApiKeyDependency])
+async def bi_tables(
+    cache: CacheDependency,
+    updated_from: str | None = Query(default=None, description="Optional incremental date/datetime filter."),
+) -> dict[str, Any]:
+    dataset = await _cached_dataset(cache, updated_from=updated_from)
+    return {
+        "tables": table_registry(dataset),
+        "dictionaries": dictionary_registry(dataset),
+        "meta": dataset.get("meta") or {},
+    }
+
+
+@app.get("/api/v1/bi/tables/{table_name}", dependencies=[ApiKeyDependency])
+async def bi_table(
+    table_name: str,
+    cache: CacheDependency,
+    updated_from: str | None = Query(default=None, description="Optional incremental date/datetime filter."),
+    flat: bool = Query(default=True, description="Convert lists/objects to scalar JSON/text columns for BI."),
+    envelope: bool = Query(default=False, description="Wrap rows with table name, count and meta."),
+) -> Any:
+    dataset = await _cached_dataset(cache, updated_from=updated_from)
     try:
-        return await cache.get(updated_from=updated_from)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid updated_from: {updated_from}") from exc
+        rows = dataset_table(dataset, table_name, flat=flat)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown BI table: {table_name}") from exc
+    return _table_response(table_name=table_name, rows=rows, dataset=dataset, envelope=envelope, flat=flat)
+
+
+@app.get("/api/v1/bi/dictionaries", dependencies=[ApiKeyDependency])
+async def bi_dictionaries(
+    cache: CacheDependency,
+    updated_from: str | None = Query(default=None, description="Optional incremental date/datetime filter."),
+) -> dict[str, Any]:
+    dataset = await _cached_dataset(cache, updated_from=updated_from)
+    return {
+        "dictionaries": dictionary_registry(dataset),
+        "meta": dataset.get("meta") or {},
+    }
+
+
+@app.get("/api/v1/bi/dictionaries/{dictionary_name}", dependencies=[ApiKeyDependency])
+async def bi_dictionary_table(
+    dictionary_name: str,
+    cache: CacheDependency,
+    updated_from: str | None = Query(default=None, description="Optional incremental date/datetime filter."),
+    flat: bool = Query(default=True, description="Convert lists/objects to scalar JSON/text columns for BI."),
+    envelope: bool = Query(default=False, description="Wrap rows with dictionary name, count and meta."),
+) -> Any:
+    dataset = await _cached_dataset(cache, updated_from=updated_from)
+    try:
+        rows = dictionary_table(dataset, dictionary_name, flat=flat)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown BI dictionary: {dictionary_name}") from exc
+    return _table_response(table_name=dictionary_name, rows=rows, dataset=dataset, envelope=envelope, flat=flat)
 
 
 @app.get("/api/v1/bi/sync/status", dependencies=[ApiKeyDependency])
@@ -394,6 +450,42 @@ async def hiring_requests(
         page_size=page_size,
         max_pages=max_pages,
     )
+
+
+async def _cached_dataset(
+    cache: BIDataCache,
+    *,
+    updated_from: str | None = None,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    if refresh:
+        try:
+            await cache.sync_once(force=True)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"BI sync failed: {exc}") from exc
+    try:
+        return await cache.get(updated_from=updated_from)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid updated_from: {updated_from}") from exc
+
+
+def _table_response(
+    *,
+    table_name: str,
+    rows: list[dict[str, Any]],
+    dataset: dict[str, Any],
+    envelope: bool,
+    flat: bool,
+) -> Any:
+    if not envelope:
+        return rows
+    return {
+        "table": table_name,
+        "count": len(rows),
+        "flat": flat,
+        "items": rows,
+        "meta": dataset.get("meta") or {},
+    }
 
 
 def _extract_bearer_token(authorization: str | None) -> str | None:

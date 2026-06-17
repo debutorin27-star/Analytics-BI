@@ -148,7 +148,6 @@ def flatten_vacancy(vacancy: dict[str, Any]) -> dict[str, Any]:
         "vacancy_id": vacancy.get("id"),
         "vacancy_title": vacancy.get("title"),
         "department": vacancy.get("department"),
-        "description": vacancy.get("description"),
         "status": vacancy.get("status"),
         "created_at": vacancy.get("createdAt"),
         "created_at_iso": timestamp_to_iso(vacancy.get("createdAt")),
